@@ -1,17 +1,30 @@
 {% extends "base.html" %}
 {% load display_tags %}
+{% load humanize %}
 {% load static from staticfiles %}
 {% block content %}
     <div class="panel panel-default">
         <div class="panel-heading">
             <div class="clearfix">
-                <h4 class="pull-left to_highlight finding-title">
+                <h3 class="pull-left to_highlight finding-title">
                     {{ finding.title }}
-                    <small>Last reviewed on {{ finding.last_reviewed }} by {{ finding.last_reviewed_by }}</small>
-                </h4>
+                    {% if finding.tags %}
+                        <sup>
+                            {% for tag in finding.tags %}
+                            <a title="Search {{ tag }}" class="btn btn-tag btn-primary" href="{% url 'simple_search' %}?query={{ tag }}">{{ tag }}</a>
+                            {% endfor %}
+                        </sup>
+                    {% endif %}
+                    {% if finding.last_reviewed %}
+                        <small>Last reviewed {{ finding.last_reviewed | naturalday }}
+                            by {{ finding.last_reviewed_by }}</small>
+                    {% else %}
+                        <small>Last reviewed {{ finding.date | naturalday }} by {{ finding.reporter }}</small>
+                    {% endif %}
+                </h3>
                 {% if user.is_staff %}
                     <div class="dropdown pull-right">
-                        <button class="btn btn-default dropdown-toggle" type="button" id="dropdownMenu1"
+                        <button class="btn btn-primary dropdown-toggle" type="button" id="dropdownMenu1"
                                 data-toggle="dropdown" aria-expanded="true">
                             <span class="fa fa-bars"></span>
                             <span class="caret"></span>
@@ -22,6 +35,25 @@
                                     <i class="fa fa-pencil-square-o"></i> Edit Finding
                                 </a>
                             </li>
+                            <li role="presentation">
+                                <a href="{% url 'manage_images' finding.id %}">
+                                    <i class="fa fa-file-image-o"></i> Manage Images
+                                </a>
+                            </li>
+                            {% if finding.under_review and dojo_user in finding.reviewers.all or dojo_user == finding.review_requested_by %}
+                                <li role="presentation">
+                                    <a href="{% url 'clear_finding_review' finding.id %}">
+                                        <i class="icon-user-check"></i> Clear Review
+                                    </a>
+                                </li>
+                            {% elif not finding.under_review %}
+                                <li role="presentation">
+                                    <a href="{% url 'request_finding_review' finding.id %}">
+                                        <i class="icon-user-check"></i> Request Peer Review
+                                    </a>
+                                </li>
+                            {% endif %}
+
                             <li role="presentation">
                                 <a href="{% url 'touch_finding' finding.id %}">
                                     <i class="fa fa-clock-o"></i> Touch Finding
@@ -35,7 +67,13 @@
                             {% if finding.active %}
                                 <li role="presentation">
                                     <a href="{% url 'close_finding' finding.id %}">
-                                        <i class="fa fa-close"></i> Close Finding
+                                        <i class="fa fa-fire-extinguisher"></i> Close Finding
+                                    </a>
+                                </li>
+                            {% else %}
+                                <li role="presentation">
+                                    <a href="{% url 'reopen_finding' finding.id %}">
+                                        <i class="fa fa-bug"></i> Open Finding
                                     </a>
                                 </li>
                             {% endif %}
@@ -57,49 +95,143 @@
                 {% endif %}
             </div>
         </div>
-    </div>
-
-    <div class="row to_highlight">
-        <div class="col-md-5">
-            <div class="panel panel-default">
-                <div class="panel-heading">Details</div>
-                <ul class="list-group">
-                    <li class="list-group-item"><b> Severity: </b>{{ finding.severity }} </li>
-                    <li class="list-group-item">
-                        <b> Status: </b>
-                        {{ finding.status }}
-                    </li>
+        <div class="table-responsive">
+            <table id="notes" class="table-striped table table-condensed table-hover centered">
+                {% if finding.under_review %}
+                    <tr class="bg-warning">
+                        <th class="bg-warning" colspan="7">
+                            <span class="text-danger">
+                                <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+                                Alert: This Finding is under review and may not be 100% accurate.
+                            </span>
+                            {% if dojo_user in finding.reviewers.all or dojo_user == finding.review_requested_by %}
+                                [<a title="Clear Review" class="text-primary" style="display: inline !important;"
+                                    href="{% url 'clear_finding_review' finding.id %}">Clear Review</a>]
+                            {% endif %}
+                        </th>
+                    </tr>
+                {% endif %}
+                {% if finding.under_defect_review %}
+                    <tr class="bg-warning">
+                        <th class="bg-warning" colspan="7">
+                            <span class="text-danger">
+                                <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+                                Alert: Please review this finding to verify if the defect is remediated.
+                            </span>
+                                [<a title="Review Finding for Closure" class="text-primary" style="display: inline !important;"
+                                    href="{% url 'defect_finding_review' finding.id %}">Review Finding for Closure</a>]
+                        </th>
+                    </tr>
+                {% endif %}
+                <tr>
+                    <th>Severity</th>
+                    <th>Status</th>
                     {% if finding.risk_acceptance_set.all %}
-                        <li class="list-group-item">
-                            <b> Acceptance: </b> <a
-                                href="{% url 'view_risk' finding.test.engagement.id finding.risk_acceptance_set.all.0.id %}">View
-                            Risk Acceptance</a>
-                        </li>
+                        <th>Acceptance</th>
                     {% endif %}
-                    <li class="list-group-item"><b> Date discovered: </b> {{ finding.date }} </li>
-                    <li class="list-group-item"><b> Date Mitigated: </b>{{ finding.mitigated }} </li>
+                    <!--<th>Build ID</th>-->
+                    <th>Date discovered</th>
+                    <th>Age</th>
+                    <th>Reporter</th>
                     {% if finding.mitigated %}
-                        <li class="list-group-item"><b> Mitigated By: </b>{{ finding.mitigated_by }} </li>
+                        <th>Date Mitigated</th>
+                        <th>Mitigated By</th>
                     {% endif %}
-                    <li class="list-group-item"><b> Reporter: </b>{{ finding.reporter }} </li>
-                </ul>
+                    {% if finding.cwe > 0 %}
+                        <th>CWE</th>
+                    {% endif %}
+                </tr>
+                <tr>
+                    <td>
+                        <span class="label severity severity-{{ finding.severity }}">
+                            {% if finding.severity %}
+                                {{ finding.severity }}
+                            {% else %}
+                                Unknown
+                            {% endif %}
+                        </span>
+                    </td>
+                    <td> {% if finding.under_review %}Under Review, {% endif %}{{ finding.status }}</td>
+                    {% if finding.risk_acceptance_set.all %}
+                        <td>
+                            <a href="{% url 'view_risk' finding.test.engagement.id finding.risk_acceptance_set.all.0.id %}">
+                                View Risk Acceptance</a>
+                        </td>
+                    {% endif %}
+                    <td>{{ finding.date }}</td>
+                    <td>{{ finding.age }} days</td>
+                    <td>{{ finding.reporter }}</td>
+                    {% if finding.mitigated %}
+                        <td>{{ finding.mitigated }}</td>
+                        <td>{{ finding.mitigated_by }}</td>
+                    {% endif %}
+                    {% if finding.cwe > 0 %}
+                        <td>
+                            <a target="_blank" href="https://cwe.mitre.org/data/definitions/{{ finding.cwe }}.html">
+                                <i class="fa fa-external-link"></i> {{ finding.cwe }}
+                            </a>
+                        </td>
+                    {% endif %}
+
+                </tr>
+            </table>
+        </div>
+    </div>
+ {% if jissue and jconf %}
+    <div class="row to_highlight">
+        <div class="col-md-12">
+            <div class="panel panel-default endpoints table-responsive">
+                <div class="panel-heading">
+                    <h4>JIRA Link
+                        <span class="pull-right"><a data-toggle="collapse" href="#jira_link"><i
+                                class="glyphicon glyphicon-chevron-up"></i></a></span>
+                    </h4>
+                </div>
+                    <div id="jira_link" class="panel-body endpoint-panel table-responsive collapse in">
+                      <a href="{{jconf.url}}/browse/{{jissue.jira_key}}" target="_blank"> {{jconf.url}}/browse/{{jissue.jira_key}} </a>
+                    </div>
             </div>
         </div>
-        <div class="col-md-7">
-            <div class="panel panel-default endpoints">
-                <div class="panel-heading">Endpoints / Systems</div>
-                <div id="vuln_endpoints" class="panel-body endpoint-panel">
-                    {% if finding.endpoints.all %}
-                        <ul>
-                            {% for endpoint in finding.endpoints.all %}
-                                <li><a title="View endpoint details"
-                                       href="{% url 'view_endpoint' endpoint.id %}">{{ endpoint }}</a></li>
-                            {% endfor %}
-                        </ul>
-                    {% else %}
-                        No endpoints.
-                    {% endif %}
+    </div>
+    {% endif %}
+    <div class="row to_highlight">
+        <div class="col-md-12">
+            <div class="panel panel-default endpoints table-responsive">
+                <div class="panel-heading">
+                    <h4>Vulnerable Endpoints / Systems
+                        <span class="pull-right"><a data-toggle="collapse" href="#vuln_endpoints"><i
+                                class="glyphicon glyphicon-chevron-up"></i></a></span>
+                    </h4>
                 </div>
+
+                {% if  finding.endpoints.all %}
+                    {% colgroup finding.endpoints.all into 3 cols as grouped_items %}
+                    <table id="vuln_endpoints"
+                           class="collapse in table-striped table table table-condensed table-hover finding-endpoints">
+                        {% for row in grouped_items %}
+                            <tr>
+                                {% for item in row %}
+                                    <td>{% if item %}<i class="fa fa-circle"></i> <a title="View endpoint details"
+                                                                                     href="{% url 'view_endpoint' item.id %}">{{ item }}</a>
+                                   {% if item.tags %}
+                                       <sup>
+                                           {% for tag in item.tags %}
+                                           <a title="Search {{ tag }}" class="btn btn-tag btn-primary" href="{% url 'simple_search' %}?query={{ tag }}">{{ tag }}</a>
+                                           {% endfor %}
+                                       </sup>
+                                      {% endif %}
+                                   {% endif %}
+                                    </td>
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </table>
+                {% else %}
+                    <div id="vuln_endpoints" class="panel-body endpoint-panel table-responsive collapse in">
+                        No endpoints.
+                    </div>
+                {% endif %}
+
 
             </div>
         </div>
@@ -108,59 +240,130 @@
     <div class="view-finding to_highlight">
         <div class="panel panel-default">
             <div class="panel-heading">
-                Description
+                <h4>Description <span class="pull-right"><a data-toggle="collapse" href="#vuln_desc"><i
+                        class="glyphicon glyphicon-chevron-up"></i></a></span></h4>
             </div>
-            <div class="panel-body">
-                {% ifequal finding.test.test_type.name 'Burp Scan'%}
-                    <div>{{ finding.description|safe }}</div>
-                {% else %}
-                    <pre>{{ finding.description }}</pre>
-                {% endifequal %}
+            <div id="vuln_desc" class="panel-body finding-description collapse in">
+                <pre>{{ finding.description }}</pre>
+            </div>
+        </div>
+
+        {% if finding.images.all %}
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4>
+                        Images
+                        <div class="pull-right btn-group" role="group">
+                            <a title="Edit Images" class="btn btn-sm btn-primary"
+                               href="{% url 'manage_images' finding.id %}">
+                                <span class="fa fa-pencil-square-o"></span>
+                            </a>
+                            <a data-toggle="collapse" href="#vuln_pics" class="btn btn-sm btn-primary">
+                                <i class="glyphicon glyphicon-chevron-up"></i>
+                            </a>
+                        </div>
+                    </h4>
+                </div>
+                <div class="panel-body  collapse in" id="vuln_pics">
+                    {% for pic in finding.images.all %}
+                        <div class="col-md-1">
+                            <a href="#"
+                               data-imageurl="{{ request.scheme }}://{{ request.get_host }}{{ pic.image_large.url }}"
+                               data-origurl="{{ request.scheme }}://{{ request.get_host }}{{ pic.image.url }}"
+                               class="thumbnail" data-toggle="modal"
+                               data-target="#findingImageModal" id="finding_pic">
+                                <img src="{{ request.scheme }}://{{ request.get_host }}{{ pic.image_thumbnail.url }}">
+                            </a>
+                        </div>
+                    {% endfor %}
+                </div>
+                <div class="panel-footer">
+                    <i title="Click on thumbnail to magnify."
+                       class="text-info fa fa-search"></i>
+                    <small>Click on thumbnail to magnify.</small>
+                </div>
+            </div>
+        {% endif %}
+        <div class="modal fade" id="findingImageModal" tabindex="-1" role="dialog"
+             aria-labelledby="findingImageModalLabel">
+            <div class="modal-dialog" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h4 class="pull-left">Finding Images</h4>
+                        <button type="button" class="pull-right btn btn-xs btn-default" data-dismiss="modal"><span
+                                class="fa fa-close"></span></button>
+                    </div>
+                    <div class="modal-body">
+                        <a id="a_to_replace" class="modal_finding_pic" href="{{ pic.image.url }}" target="_blank"
+                           title="View original image.">
+                            <img id="to_replace" src="{{ pic.image_large.url }}" class="img-responsive"/>
+                        </a>
+                    </div>
+                    <div class="modal-footer">
+                        <a href="#" id="next" class="btn btn-default bnt-xs pull-right"><span
+                                class="fa fa-arrow-right"></span></a>
+                    </div>
+                </div>
             </div>
         </div>
 
         <div class="panel panel-default">
-            <div class="panel-heading">Mitigation</div>
-            <div class="panel-body">
-                {% ifequal finding.test.test_type.name 'Burp Scan'%}
-                    <div>{{ finding.mitigation|safe }}</div>
-                {% else %}
-                    <pre>{{ finding.mitigation }}</pre>
-                {% endifequal %}
+            <div class="panel-heading">
+                <h4>Mitigation <span class="pull-right"><a data-toggle="collapse" href="#vuln_mitigation"><i
+                        class="glyphicon glyphicon-chevron-up"></i></a></span></h4>
+            </div>
+            <div id="vuln_mitigation" class="panel-body collapse in">
+                <pre>{{ finding.mitigation }}</pre>
             </div>
         </div>
-        {% if burp_request %}
+        {% if finding.burprawrequestresponse_set.all %}
             <div class="panel panel-default">
                 <div class="panel-heading">
-                    Request
-                    <span class="pull-right clickable  panel-collapsed"><i class="glyphicon glyphicon-chevron-down"></i></span>
+                    <h4>Request Response Pairs <span class="pull-right"><a data-toggle="collapse" href="#vuln_req_res">
+                        <i class="glyphicon glyphicon-chevron-down"></i></a></span></h4>
                 </div>
-                <div class="panel-body" style="display: none">
-                    <pre>{{ burp_request }}</pre>
-                </div>
-            </div>
-        {% endif %}
-        {% if burp_response %}
-            <div class="panel panel-default">
-                <div class="panel-heading">
-                    Response
-                    <span class="pull-right clickable  panel-collapsed"><i class="glyphicon glyphicon-chevron-down"></i></span>
-                </div>
+                <div id="vuln_req_res" class="panel-body collapse">
+                    {% for req_resp in finding.burprawrequestresponse_set.all %}
+                        <div class="panel panel-default">
+                            <div class="panel-heading">
+                                <h4>Request #{{ forloop.counter }}<span class="pull-right">
+                                    <a data-toggle="collapse" href="#vuln_req_{{ forloop.counter }}">
+                                        <i class="glyphicon glyphicon-chevron-down"></i></a></span></h4>
+                            </div>
+                            <div id="vuln_req_{{ forloop.counter }}" class="panel-body collapse">
+                                <pre>{{ req_resp.get_request }}</pre>
+                            </div>
+                        </div>
+                        <div class="panel panel-default">
+                            <div class="panel-heading">
+                                <h4>Response #{{ forloop.counter }}<span class="pull-right">
+                                    <a data-toggle="collapse" href="#vuln_res_{{ forloop.counter }}">
+                                        <i class="glyphicon glyphicon-chevron-down"></i></a></span></h4>
+                            </div>
 
-                <div class="panel-body" style="display: none">
-                    <pre>{{ burp_response }}</pre>
+                            <div id="vuln_res_{{ forloop.counter }}" class="panel-body collapse">
+                                <pre>{{ req_resp.get_response }}</pre>
+                            </div>
+                        </div>
+                    {% endfor %}
                 </div>
             </div>
         {% endif %}
         <div class="panel panel-default">
-            <div class="panel-heading">Impact</div>
-            <div class="panel-body">
+            <div class="panel-heading">
+                <h4>Impact <span class="pull-right"><a data-toggle="collapse" href="#vuln_impact"><i
+                        class="glyphicon glyphicon-chevron-up"></i></a></span></h4>
+            </div>
+            <div id="vuln_impact" class="panel-body collapse in">
                 <pre>{{ finding.impact }}</pre>
             </div>
         </div>
         <div class="panel panel-default">
-            <div class="panel-heading">References</div>
-            <div class="panel-body">
+            <div class="panel-heading">
+                <h4>References <span class="pull-right"><a data-toggle="collapse" href="#vuln_refs"><i
+                        class="glyphicon glyphicon-chevron-up"></i></a></span></h4>
+            </div>
+            <div id="vuln_refs" class="panel-body collapse in">
                 <pre>{{ finding.references }}</pre>
             </div>
         </div>
@@ -170,85 +373,107 @@
 
     <div class="panel panel-default to_highlight table-responsive">
         <div class="panel-heading">
-            <h3>Notes</h3>
+            <h4>Notes <span class="pull-right"><a data-toggle="collapse" href="#vuln_notes"><i
+                    class="glyphicon glyphicon-chevron-up"></i></a></span></h4>
         </div>
-        {% if notes %}
-            <table id="notes" class="tablesorter-bootstrap table table-condensed table-striped">
-                <thead>
-                <tr>
-                    <th>User</th>
-                    <th>Date</th>
-                    <th>Note</th>
-                </tr>
-                </thead>
-                <tbody>
-                {% for note in notes %}
+        <div id="vuln_notes" class="panel-body collapse in">
+            {% if notes %}
+                <table id="notes" class="tablesorter-bootstrap table table-condensed table-striped">
+                    <thead>
                     <tr>
-                        <td>
-                            {{ note.author.username }}
-                        </td>
-                        <td>
-                            {{ note.date }}
-                        </td>
-                        <td>
-                            {{ note }}
-                            {% ifequal user.username note.author.username %}
-                                <a href="{% url 'delete_finding_note' finding.id note.id %}"> [X] </a>
-                            {% endifequal %}
-                        </td>
+                        <th>User</th>
+                        <th>Date</th>
+                        <th>Note</th>
                     </tr>
-                {% endfor %}
+                    </thead>
+                    <tbody>
+                    {% for note in notes %}
+                        <tr>
+                            <td>
+                                {{ note.author.username }}
+                            </td>
+                            <td>
+                                {{ note.date }}
+                            </td>
+                            <td>
+                                {{ note }}
+                                {% ifequal user.username note.author.username %}
+                                    <a href="{% url 'delete_finding_note' finding.id note.id %}"
+                                       class="btn btn-danger btn-xs" title="Delete">
+                                        <i class="fa fa-trash" aria-hidden="true"></i>
+                                    </a>
+                                {% endifequal %}
+                            </td>
+                        </tr>
+                    {% endfor %}
 
-                </tbody>
-            </table>
-        {% else %}
-            <p class="text-center">No notes saved.</p>
-        {% endif %}
-        <hr/>
-        <form class="form-horizontal" action="{% url 'view_finding' finding.id %}" method="post">{% csrf_token %}
-            {% include "dojo/form_fields.html" with form=form %}
-            <div class="form-group">
-                <div class="col-sm-offset-2 col-sm-10">
-                    <input class="btn" type="submit" value="Add Note"/>
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="text-center">No notes saved.</p>
+            {% endif %}
+            <hr/>
+            <form class="form-horizontal" action="{% url 'view_finding' finding.id %}" method="post">{% csrf_token %}
+                {% include "dojo/form_fields.html" with form=form %}
+                <div class="form-group">
+                    <div class="col-sm-offset-2 col-sm-10">
+                        <input class="btn" type="submit" value="Add Note"/>
+                    </div>
                 </div>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
 {% endblock %}
 {% block postscript %}
-    <script type="text/javascript" src="{% static "jquery-cookie/jquery.cookie.js" %}"></script>
-    <script type="text/javascript" src="{% static "text-highlighter/build/TextHighlighter.min.js" %}"></script>
+    <script type="text/javascript" src="{% static "jquery-highlight/jquery.highlight.js" %}"></script>
     <script type="text/javascript">
-        $(function () {
-            if (document.referrer.indexOf('simple_search') > 0) {
-                terms = '';
-                if ($.cookie('highlight')) {
-                    terms = $.cookie('highlight').split(' ');
+        if (document.referrer.indexOf('simple_search') > 0) {
+            var terms = '';
+            if ($.cookie('highlight')) {
+                terms = $.cookie('highlight').split(' ');
 
-                    var hltr = new TextHighlighter(document.body);
-
-                    for (var i = 0; i < terms.length; i++) {
-                        hltr.find(terms[i], false);
-                    }
+                for (var i = 0; i < terms.length; i++) {
+                    $('body').highlight(terms[i]);
                 }
-
-                $('input#simple_search').val(terms);
             }
+
+            $('input#simple_search').val(terms);
+        }
+
+        $(document).ready(function () {
+            $("a[data-toggle='collapse']").on('click', function () {
+                var i = $($(this).find('i').get(0));
+                i.toggleClass('glyphicon-chevron-up').toggleClass('glyphicon-chevron-down');
+            })
         });
 
-        $(document).on('click', '.panel-heading span.clickable', function (e) {
-            var $this = $(this);
-            if (!$this.hasClass('panel-collapsed')) {
-                $this.parents('.panel').find('.panel-body').slideUp();
-                $this.addClass('panel-collapsed');
-                $this.find('i').removeClass('glyphicon-chevron-up').addClass('glyphicon-chevron-down');
-            } else {
-                $this.parents('.panel').find('.panel-body').slideDown();
-                $this.removeClass('panel-collapsed');
-                $this.find('i').removeClass('glyphicon-chevron-down').addClass('glyphicon-chevron-up');
-            }
-        })
+        $('#findingImageModal').on('show.bs.modal', function (event) {
+            var link = $(event.relatedTarget);
+            var loc = link.data('imageurl')
+            var loco = link.data('origurl')
+            console.log(link);
+            console.log(loc);
+            var modal = $(this);
+            modal.find('#to_replace').attr('src', loc);
+            modal.find('#a_to_replace').attr('href', loco);
+        });
+        $("a#next").on('click', function (e) {
+            e.preventDefault();
+            var showing = $("img#to_replace").attr('src');
+            var thumbnails = $('a.thumbnail');
 
-
+            thumbnails.each(function (index) {
+                if ($(this).data('imageurl') == showing) {
+                    console.log(index, thumbnails.length)
+                    if (index == thumbnails.length - 1) {
+                        // at the end
+                        $("img#to_replace").attr('src', $(thumbnails[0]).data('imageurl'));
+                    }
+                    else {
+                        $("img#to_replace").attr('src', $(thumbnails[index + 1]).data('imageurl'));
+                    }
+                }
+            });
+        });
     </script>
 {% endblock %}

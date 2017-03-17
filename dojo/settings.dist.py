@@ -3,12 +3,18 @@ import os
 DEBUG = True
 TEMPLATE_DEBUG = DEBUG
 LOGIN_REDIRECT_URL = '/'
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTOCOL', 'https')
-SECURE_SSL_REDIRECT = True
+#SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTOCOL', 'https')
+#SECURE_SSL_REDIRECT = True
+#SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = True
 TEST_RUNNER = 'django.test.runner.DiscoverRunner'
-VERSION = '1.0.4'
+ENABLE_DEDUPLICATION = False
+ENABLE_JIRA = False
+# True will display S0, S1, S2, ect in most places
+# False will display Critical, High, Medium, etc
+S_FINDING_SEVERITY_NAMING = False
+URL_PREFIX = ''
 
 # Uncomment this line if you enable SSL
 # SESSION_COOKIE_SECURE = True
@@ -30,9 +36,9 @@ DATABASES = {
         # The following settings are not used with sqlite3:
         'USER': 'MYSQLUSER',
         'PASSWORD': 'MYSQLPWD',
-        'HOST': 'localhost',       # Empty for localhost through domain sockets
+        'HOST': 'MYSQLHOST',       # Empty for localhost through domain sockets
                                    # or '127.0.0.1' for localhost through TCP.
-        'PORT': '3306',           # Set to empty string for default.
+        'PORT': 'MYSQLPORT',           # Set to empty string for default.
     }
 }
 
@@ -82,6 +88,7 @@ STATIC_ROOT = "DOJO_STATIC_ROOT"
 # Example: "http://example.com/static/", "http://static.example.com/"
 STATIC_URL = '/static/'
 
+
 # Additional locations of static files
 STATICFILES_DIRS = (
     # Put strings here, like "/home/html/static" or "C:/www/django/static".
@@ -98,6 +105,8 @@ STATICFILES_FINDERS = (
     'djangobower.finders.BowerFinder',
 )
 
+FILE_UPLOAD_HANDLERS = ("django.core.files.uploadhandler.TemporaryFileUploadHandler",)
+
 # where should bower install components
 # collect static will move them to the static root
 BOWER_COMPONENTS_ROOT = 'BOWERDIR'
@@ -105,17 +114,19 @@ BOWER_COMPONENTS_ROOT = 'BOWERDIR'
 # what components should be installed
 BOWER_INSTALLED_APPS = (
     'fontawesome',
-    'startbootstrap-sb-admin-2',
+    'https://github.com/BlackrockDigital/startbootstrap-sb-admin-2.git',
     'fullcalendar',
     'jquery-cookie',
-    'jquery.tablesorter',
     'jquery-ui',
-    'text-highlighter',
+    'jquery-highlight',
     # directly from github since no bower comp available
     'https://github.com/jumjum123/JUMFlot.git',
     'https://github.com/markrcote/flot-axislabels.git',
     'chosen',
     'chosen-bootstrap',
+    'bootswatch-dist#readable',
+    'bootstrap-wysiwyg-steveathon',
+    'justgage'
 )
 
 # Make this unique, and don't share it with anybody.
@@ -141,6 +152,7 @@ MIDDLEWARE_CLASSES = (
     'django.middleware.common.CommonMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
+    #'django.middleware.security.SecurityMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -150,12 +162,16 @@ MIDDLEWARE_CLASSES = (
 ROOT_URLCONF = 'dojo.urls'
 LOGIN_URL = '/login'
 LOGIN_EXEMPT_URLS = (
-    r'^static/',
-    r'^metrics/all$'
-    r'^metrics$',
-    r'^metrics/product/type/(?P<mtype>\d+)$',
-    r'^metrics/simple$',
-    r'^api/v1/',
+    r'^%sstatic/' % URL_PREFIX,
+    r'^%swebhook/' % URL_PREFIX,
+    r'^%smetrics/all$' % URL_PREFIX,
+    r'^%smetrics$' % URL_PREFIX,
+    r'^%smetrics/product/type/(?P<mtype>\d+)$' % URL_PREFIX,
+    r'^%smetrics/simple$' % URL_PREFIX,
+    r'^%sapi/v1/' % URL_PREFIX,
+    r'^%sajax/v1/' % URL_PREFIX,
+    r'^%sreports/cover$' % URL_PREFIX,
+    r'^%sfinding/image/(?P<token>[^/]+)$' % URL_PREFIX
 )
 
 # Python dotted path to the WSGI application used by Django's runserver.
@@ -175,15 +191,20 @@ INSTALLED_APPS = (
     'django.contrib.sites',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'polymorphic',  # provides admin templates
+    'overextends',
     'django.contrib.admin',
     'django.contrib.humanize',
     'gunicorn',
     'tastypie',
     'djangobower',
-    'easy_pdf',
     'auditlog',
     'dojo',
     'tastypie_swagger',
+    'watson',
+    'tagging',
+    'custom_field',
+    'imagekit',
 )
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -199,6 +220,23 @@ PORT_SCAN_SOURCE_IP = '127.0.0.1'
 # Used in a few places to prefix page headings and in email
 # salutations
 TEAM_NAME = 'Security Engineering'
+
+# Celery settings
+BROKER_URL = 'sqla+sqlite:///dojo.celerydb.sqlite'
+CELERY_SEND_TASK_ERROR_EMAILS = True
+CELERY_IGNORE_RESULT = True
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_RESULT_EXPIRES = 86400
+CELERYBEAT_SCHEDULE_FILENAME = DOJO_ROOT + '/dojo.celery.beat.db'
+CELERY_ACCEPT_CONTENT = ['pickle', 'json', 'msgpack', 'yaml']
+
+# wkhtmltopdf settings
+WKHTMLTOPDF_PATH = '/usr/local/bin/wkhtmltopdf'
+
+# django-tagging settings
+FORCE_LOWERCASE_TAGS = True
+MAX_TAG_LENGTH = 25
+
 
 # A sample logging configuration. The only tangible logging
 # performed by this configuration is to send an email to

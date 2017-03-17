@@ -3,49 +3,18 @@
 {% load static from staticfiles %}
 {% block content %}
     <div>
-        <h3> Add findings to a test
-            <!-- Button trigger modal -->
-            <button type="button" class="btn btn-primary btn-sm" data-toggle="modal" data-target="#myModal">
-                Add Finding from Template
-            </button>
-            <!-- Button to trigger modal -->
-        </h3>
-
-        <div class="modal fade" id="myModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel"
-             aria-hidden="true">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <form action="{% url 'search' tid %}" id="searchForm" name="searchForm">
-                            <input type="text" name="q" id="id_q" placeholder="Leave blank to display all "/>
-                            <input type="submit" value="Search"/>
-                        </form>
-                        <button type="button" class="close" data-dismiss="modal" aria-hidden="true">X</button>
-                        <h3 id="myModalLabel">Template findings</h3>
-                    </div>
-                    <div id="result" class="modal-body">
-                        {% if not findings %}
-                            No templates found
-                        {% endif %}
-                        {% for finding in findings %}
-                            <p><a href="{% url 'add_temp_finding' tid finding.id %}">{{ finding }}  </a></p>
-                        {% endfor %}
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
-                        <button type="button" class="btn btn-primary">Save changes</button>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <h3> Add findings to a test</h3>
     </div>
+    <div>
     {% if temp %}
-
-        <br> <br>
-
         <form class="form-horizontal" action="{% url 'add_temp_finding' tid fid %}" method="post">
             {% csrf_token %}
             {% include "dojo/form_fields.html" with form=form %}
+            {%  if jform %}
+                <h4> JIRA </h4>
+                <h4>
+                {% include "dojo/form_fields.html" with form=jform %}
+            {% endif %}
             <div class="form-group">
                 <div class="col-sm-offset-2 col-sm-10">
                     <input class="btn btn-primary" type="submit" value="Add Another Finding"/>
@@ -57,6 +26,11 @@
         <form class="form-horizontal" action="{% url 'add_findings' tid %}" method="post">
             {% csrf_token %}
             {% include "dojo/form_fields.html" with form=form %}
+            {%  if jform %}
+                <h4> JIRA </h4>
+                <hr>
+                {% include "dojo/form_fields.html" with form=jform %}
+            {% endif %}
             <div class="form-group">
                 <div class="col-sm-offset-2 col-sm-10">
                     <input class="btn btn-primary" type="submit" value="Add Another Finding"/>
@@ -65,26 +39,11 @@
             </div>
         </form>
     {% endif %}
+    </div>
 {% endblock %}
 {% block postscript %}
-    <script>
-        $("#searchForm").click(function (event) {
-            /* stop form from submitting normally */
-            event.preventDefault();
-            /* get some values from elements on the page: */
-            var $form = $(this),
-                    term = $form.find('input[name="q"]').val(),
-                    url = $form.attr('action');
-            /* Send the data using post */
-            var posting = $.get(url, {
-                q: term
-            }).done(function (data) {
-                $("#result").empty().append(data);
-            });
-        });
-    </script>
     <script type="application/javascript">
-        $('#add_id_endpoints').attr('href', '/endpoints/{{ test.engagement.product.id }}/add?_popup');
+        $('#add_id_endpoints').attr('href', "{% url 'add_endpoint' test.engagement.product.id %}?_popup");
         {% if not form_error %}
             $('#id_endpoints').find('option').remove();
         {% endif %}

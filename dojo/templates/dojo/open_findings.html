@@ -1,11 +1,23 @@
 {% extends "base.html" %}
 {% load navigation_tags %}
+{% load get_config_setting %}
 {% block content %}
     <div class="row">
-        <div class="col-md-10">
+        <div class="col-md-12">
+            <div class="panel panel-default">
+                <div class="panel-heading tight">
+                    <h3 class="has-filters">
+                        Open Findings
+                        <div class="dropdown pull-right"></div>
+                    </h3>
+                </div>
+                <div id="the-filters" class="panel-body collapse {% if request.META.QUERY_STRING %}in{% endif %}">
+                    {% include "dojo/filter_snippet.html" with form=filtered.form %}
+                </div>
+            </div>
             {% if findings %}
                 <div class="clearfix">
-                    <h3 class="pull-left">Open Findings</h3>{% include "dojo/paging_snippet.html" with page=findings page_size=True %}
+                    {% include "dojo/paging_snippet.html" with page=findings page_size=True %}
                 </div>
                 <div class="panel panel-default table-responsive">
                     <table id="open_findings"
@@ -17,6 +29,9 @@
                             <th class="nowrap">{% dojo_sort request 'Reviewed' 'last_reviewed'%}</th>
                             <th class="nowrap">{% dojo_sort request 'Severity' 'numerical_severity' 'asc' %}</th>
                             <th class="nowrap">Age</th>
+                            {% if "ENABLE_JIRA"|get_config_setting %}
+                            <th class="nowrap">Jira</th>
+                            {% endif %}
                             <th class="nowrap">{% dojo_sort request 'Product' 'test__engagement__product__name'%}</th>
                         </tr>
                         </thead>
@@ -25,6 +40,11 @@
                             <tr>
                                 <td><a title="{{ finding.title }}"
                                                       href="{% url 'view_finding' finding.id %}">{{ finding.title }}</a>
+                                    <sup>
+                                        {% for tag in finding.tags %}
+                                        <a title="Search {{ tag }}" class="btn btn-tag btn-primary" href="{% url 'simple_search' %}?query={{ tag }}">{{ tag }}</a>
+                                        {% endfor %}
+                                    </sup>
                                 </td>
                                 <td class="nowrap">{{ finding.date }}</td>
                                 <td class="nowrap">{{ finding.last_reviewed }}</td>
@@ -32,6 +52,11 @@
                                     <p class="text-error">
                                 {% else %}<p>{% endif %}{{ finding.severity }}</p></td>
                                 <td>{{ finding.age }}</td>
+                                {% if "ENABLE_JIRA"|get_config_setting %}
+                                <td>
+                                <a href="{{finding.jira_conf.url}}/browse/{{finding.jira.jira_key}}" target="_blank"> {{finding.jira.jira_key}} </a>
+                                </td>
+                                {% endif %}
                                 <td><a
                                         href="{% url 'view_product' finding.test.engagement.product.id %}"
                                         title="{{ finding.test.engagement.product }}">{{ finding.test.engagement.product }}</a>
@@ -41,26 +66,12 @@
                         </tbody>
                     </table>
                 </div>
-                {% include "dojo/paging_snippet.html" with page=findings page_size=True%}
+                <div class="clearfix">
+                    {% include "dojo/paging_snippet.html" with page=findings page_size=True%}
+                </div>
             {% else %}
-                No findings found.
+                <p class="text-center">No findings found.</p>
             {% endif %}
-        </div>
-        <div class="col-md-2">
-            <div class="panel panel-default filters">
-                {% if filtered.form %}
-                    <div class="panel-heading">Filters</div>
-                    <form method="get" class="panel-body">
-                        {{ filtered.form.as_p }}
-                        <div class="centered">
-                            <button class="btn btn-sm btn-primary">
-                                <i class="fa fa-filter"></i> Apply
-                            </button><br/><br/>
-                            <a href="{% url 'open_findings' %}"> [Clear Filters] </a>
-                        </div>
-                    </form>
-                {% endif %}
-            </div>
         </div>
     </div>
 
@@ -79,4 +90,5 @@
             });
         });
     </script>
+    {% include "dojo/filter_js_snippet.html" %}
 {% endblock %}

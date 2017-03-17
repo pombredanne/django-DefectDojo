@@ -2,17 +2,37 @@ from django import template
 from django.utils.safestring import mark_safe as safe
 
 from dojo.models import Product_Type
-
+from dojo.utils import get_alerts
 
 register = template.Library()
 
 
 @register.inclusion_tag('alert_nav_items.html')
 def alert_nav_items(user):
-    from dojo.views import get_alerts
-
     alerts = get_alerts(user)
     return {'alerts': alerts[:12]}
+
+
+@register.simple_tag(takes_context=True)
+def alert_count(context):
+    count = len(get_alerts(context['request'].user))
+    return count if count > 0 else ''
+
+
+@register.simple_tag(takes_context=True)
+def query_string_as_hidden(context):
+    request = context['request']
+    query_string = request.META['QUERY_STRING']
+    inputs = ''
+    if query_string:
+        parameters = query_string.split('&')
+        for param in parameters:
+            parts = param.split('=')
+            if len(parts) == 2:
+                inputs += "<input type='hidden' name='" + parts[0] + "' value='" + parts[1] + "'/>"
+            else:
+                inputs += "<input type='hidden' name='" + parts[0] + "' value=''/>"
+    return inputs
 
 
 @register.inclusion_tag('pt_nav_items.html')

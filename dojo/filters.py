@@ -1,21 +1,20 @@
 __author__ = 'Jay Paz'
-from auditlog.models import LogEntry
-from datetime import timedelta, datetime
 import collections
+from datetime import timedelta, datetime
 
-from django.conf import settings
+from auditlog.models import LogEntry
 from django import forms
-
-from django_filters.filters import ChoiceFilter, _truncate
-from django.utils.translation import ugettext_lazy as _
-from django.utils import six
-from django_filters import FilterSet, CharFilter, \
-    ModelMultipleChoiceFilter, ModelChoiceFilter, MultipleChoiceFilter
+from django.conf import settings
 from django.contrib.auth.models import User
+from django.utils import six
+from django.utils.translation import ugettext_lazy as _
+from django_filters import FilterSet, CharFilter, \
+    ModelMultipleChoiceFilter, ModelChoiceFilter, MultipleChoiceFilter, MethodFilter
+from django_filters.filters import ChoiceFilter, _truncate, DateTimeFilter
 from pytz import timezone
 
 from dojo.models import Dojo_User, Product_Type, Finding, \
-    Product, Test_Type, Endpoint, Development_Environment
+    Product, Test_Type, Endpoint, Development_Environment, Finding_Template, Report
 
 local_tz = timezone(settings.TIME_ZONE)
 SEVERITY_CHOICES = (('Info', 'Info'), ('Low', 'Low'), ('Medium', 'Medium'),
@@ -128,6 +127,36 @@ class ReportBooleanFilter(ChoiceFilter):
         except (ValueError, TypeError):
             value = ''
         return self.options[value][1](qs, self.name)
+
+
+class ReportRiskAcceptanceFilter(ChoiceFilter):
+
+    def any(self, qs, name):
+        return qs.all()
+
+    def accpeted(self, qs, name):
+        return qs.filter(risk_acceptance__isnull=False)
+
+    def not_accpeted(self, qs, name):
+        return qs.filter(risk_acceptance__isnull=True)
+
+    options = {
+        '': (_('Either'), any),
+        1: (_('Yes'), accpeted),
+        2: (_('No'), not_accpeted),
+    }
+
+    def __init__(self, *args, **kwargs):
+        kwargs['choices'] = [
+            (key, value[0]) for key, value in six.iteritems(self.options)]
+        super(ReportRiskAcceptanceFilter, self).__init__(*args, **kwargs)
+
+    def filter(self, qs, value):
+        try:
+            value = int(value)
+        except (ValueError, TypeError):
+            value = ''
+        return self.options[value][1](self, qs, self.name)
 
 
 class MetricsDateRangeFilter(ChoiceFilter):
@@ -244,11 +273,13 @@ class ProductFilter(DojoFilter):
     prod_type = ModelMultipleChoiceFilter(
         queryset=Product_Type.objects.all().order_by('name'),
         label="Product Type")
+    #tags = CharFilter(lookup_type='icontains', label="Tags")
 
     def __init__(self, *args, **kwargs):
         self.user = None
         if 'user' in kwargs:
             self.user = kwargs.pop('user')
+
         super(ProductFilter, self).__init__(*args, **kwargs)
 
         if self.user is not None and not self.user.is_staff:
@@ -258,6 +289,7 @@ class ProductFilter(DojoFilter):
     class Meta:
         model = Product
         fields = ['name', 'prod_type']
+        exclude = ['tags']
         order_by = (('name', 'Product Name'),
                     ('-name', 'Product Name Desc'),
                     ('prod_type__name', 'Product Type'),
@@ -412,7 +444,7 @@ class AcceptedFindingFilter(DojoFilter):
                    'endpoint', 'references', 'test', 'is_template',
                    'active', 'verified', 'out_of_scope', 'false_p',
                    'duplicate', 'thread_id', 'mitigated', 'notes',
-                   'numerical_severity', 'reporter', 'endpoints', 'last_reviewed']
+                   'numerical_severity', 'reporter', 'endpoints', 'last_reviewed', 'o']
 
     def __init__(self, *args, **kwargs):
         super(AcceptedFindingFilter, self).__init__(*args, **kwargs)
@@ -471,6 +503,45 @@ class ProductFindingFilter(DojoFilter):
                     for finding in self.queryset.distinct()
                     if finding.severity not in sevs)
         self.form.fields['severity'].choices = sevs.items()
+
+
+class TemplateFindingFilter(DojoFilter):
+    title = CharFilter(lookup_type='icontains')
+    cwe = MultipleChoiceFilter(choices=[])
+    severity = MultipleChoiceFilter(choices=[])
+    numerical_severity = MultipleChoiceFilter(choices=[])
+
+    class Meta:
+        model = Finding_Template
+        order_by = (('cwe', 'CWE Asc'),
+                    ('-cwe', 'CWE Desc'),
+                    ('title', 'Title Asc'),
+                    ('-title', 'Title Desc'),
+                    ('-numerical_severity', 'Severity Asc'),
+                    ('numerical_severity', 'Severity Desc'),)
+        exclude = ['description', 'mitigation', 'impact',
+                   'references', 'numerical_severity']
+
+    def __init__(self, *args, **kwargs):
+        super(TemplateFindingFilter, self).__init__(*args, **kwargs)
+        cwe = dict()
+        cwe = dict([finding.cwe, finding.cwe]
+                   for finding in self.queryset.distinct()
+                   if finding.cwe > 0 and finding.cwe not in cwe)
+        cwe = collections.OrderedDict(sorted(cwe.items()))
+        self.form.fields['cwe'].choices = cwe.items()
+
+        self.form.fields['severity'].choices = ((u'Critical', u'Critical'),
+                                                (u'High', u'High'),
+                                                (u'Medium', u'Medium'),
+                                                (u'Low', u'Low'),
+                                                (u'Info', u'Info'))
+
+        self.form.fields['numerical_severity'].choices = ((u'S0', u'S0'),
+                                                          (u'S1', u'S1'),
+                                                          (u'S2', u'S2'),
+                                                          (u'S3', u'S3'),
+                                                          (u'S4', u'S4'))
 
 
 class FindingStatusFilter(ChoiceFilter):
@@ -565,7 +636,6 @@ class EndpointFilter(DojoFilter):
                     ('-host', 'Host Desc'))
 
 
-
 class EndpointReportFilter(DojoFilter):
     host = CharFilter(lookup_type='icontains')
     path = CharFilter(lookup_type='icontains')
@@ -580,29 +650,34 @@ class EndpointReportFilter(DojoFilter):
 
 
 class ReportFindingFilter(DojoFilter):
+    title = CharFilter(lookup_type='icontains', label='Name')
     severity = MultipleChoiceFilter(choices=SEVERITY_CHOICES)
     active = ReportBooleanFilter()
     mitigated = MitigatedDateRangeFilter()
     verified = ReportBooleanFilter()
     false_p = ReportBooleanFilter(label="False Positive")
+    test__engagement__risk_acceptance = ReportRiskAcceptanceFilter(label="Risk Accepted")
     duplicate = ReportBooleanFilter()
     out_of_scope = ReportBooleanFilter()
 
     class Meta:
         model = Finding
-        exclude = ['title', 'date', 'cwe', 'url', 'description', 'mitigation', 'impact',
+        exclude = ['date', 'cwe', 'url', 'description', 'mitigation', 'impact',
                    'endpoint', 'references', 'test', 'is_template',
                    'thread_id', 'notes', 'endpoints',
-                   'numerical_severity', 'reporter', 'last_reviewed']
+                   'numerical_severity', 'reporter', 'last_reviewed', 'images']
 
 
 class ReportAuthedFindingFilter(DojoFilter):
+    title = CharFilter(lookup_type='icontains', label='Name')
     test__engagement__product = ModelMultipleChoiceFilter(queryset=Product.objects.all(), label="Product")
+    test__engagement__product__prod_type = ModelMultipleChoiceFilter(queryset=Product_Type.objects.all(), label="Product Type")
     severity = MultipleChoiceFilter(choices=SEVERITY_CHOICES)
     active = ReportBooleanFilter()
     mitigated = MitigatedDateRangeFilter()
     verified = ReportBooleanFilter()
     false_p = ReportBooleanFilter(label="False Positive")
+    test__engagement__risk_acceptance = ReportRiskAcceptanceFilter(label="Risk Accepted")
     duplicate = ReportBooleanFilter()
     out_of_scope = ReportBooleanFilter()
 
@@ -617,7 +692,7 @@ class ReportAuthedFindingFilter(DojoFilter):
 
     class Meta:
         model = Finding
-        exclude = ['title', 'date', 'cwe', 'url', 'description', 'mitigation', 'impact',
+        exclude = ['date', 'cwe', 'url', 'description', 'mitigation', 'impact',
                    'endpoint', 'references', 'test', 'is_template',
                    'thread_id', 'notes', 'endpoints',
                    'numerical_severity', 'reporter', 'last_reviewed']
@@ -648,8 +723,42 @@ class UserFilter(DojoFilter):
                     ('-is_superuser', 'SuperUser Desc'),)
 
 
-class EngineerFilter(DojoFilter):
+class ReportFilter(DojoFilter):
+    name = CharFilter(lookup_type='icontains')
+    type = MultipleChoiceFilter(choices=[])
+    format = MultipleChoiceFilter(choices=[])
+    requester = ModelMultipleChoiceFilter(queryset=Dojo_User.objects.all())
+    datetime = DateTimeFilter()
+    status = MultipleChoiceFilter(choices=[])
 
+    class Meta:
+        model = Report
+        exclude = ['task_id', 'file']
+        order_by = (('-datetime', 'Date Desc'),
+                    ('datetime', 'Date Asc'),
+                    ('name', 'Name'),
+                    ('-name', 'Name Desc'),
+                    ('type', 'Type'),
+                    ('-type', 'Type Desc'),
+                    ('format', 'Format'),
+                    ('-format', 'Format Desc'),
+                    ('requester', 'Requester'),
+                    ('-requester', 'Requester Desc'))
+
+    def __init__(self, *args, **kwargs):
+        super(ReportFilter, self).__init__(*args, **kwargs)
+        type = dict()
+        type = dict([report.type, report.type] for report in self.queryset.distinct() if report.type is not None)
+        type = collections.OrderedDict(sorted(type.items()))
+        self.form.fields['type'].choices = type.items()
+
+        status = dict()
+        status = dict([report.status, report.status] for report in self.queryset.distinct() if report.status is not None)
+        status = collections.OrderedDict(sorted(status.items()))
+        self.form.fields['status'].choices = status.items()
+
+
+class EngineerFilter(DojoFilter):
     class Meta:
         model = Dojo_User
         fields = ['is_staff', 'is_superuser', 'is_active', 'username', 'email', 'last_name', 'first_name']
@@ -713,4 +822,3 @@ class DevelopmentEnvironmentFilter(DojoFilter):
         include = ('name',)
         order_by = (('name', ' Name'),
                     ('-name', 'Name Desc'))
-

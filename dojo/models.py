@@ -1,14 +1,24 @@
-from datetime import datetime
+import base64
 import os
+import re
+from datetime import datetime
+from uuid import uuid4
 
+import watson
+from auditlog.registry import auditlog
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
+from django.core.urlresolvers import reverse
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Q
 from django.utils.timezone import now
+from imagekit.models import ImageSpecField
+from imagekit.processors import ResizeToCover
 from pytz import timezone
-from auditlog.registry import auditlog
+from tagging.registry import register as tag_register
 
 localtz = timezone(settings.TIME_ZONE)
 
@@ -39,6 +49,22 @@ class Dojo_User(User):
         return self.get_full_name()
 
 
+class UserContactInfo(models.Model):
+    user = models.OneToOneField(User)
+    title = models.CharField(blank=True, null=True, max_length=150)
+    phone_regex = RegexValidator(regex=r'^\+?1?\d{9,15}$',
+                                 message="Phone number must be entered in the format: '+999999999'. "
+                                         "Up to 15 digits allowed.")
+    phone_number = models.CharField(validators=[phone_regex], blank=True, max_length=15,
+                                    help_text="Phone number must be entered in the format: '+999999999'. "
+                                              "Up to 15 digits allowed.")
+    cell_number = models.CharField(validators=[phone_regex], blank=True, max_length=15,
+                                   help_text="Phone number must be entered in the format: '+999999999'. "
+                                             "Up to 15 digits allowed.")
+    twitter_username = models.CharField(blank=True, null=True, max_length=150)
+    github_username = models.CharField(blank=True, null=True, max_length=150)
+
+
 class Contact(models.Model):
     name = models.CharField(max_length=100)
     email = models.EmailField()
@@ -50,6 +76,34 @@ class Contact(models.Model):
 
 class Product_Type(models.Model):
     name = models.CharField(max_length=300)
+    critical_product = models.BooleanField(default=False)
+    key_product = models.BooleanField(default=False)
+
+    def critical_present(self):
+        c_findings = Finding.objects.filter(test__engagement__product__prod_type=self, severity='Critical')
+        if c_findings.count() > 0:
+            return True
+
+    def high_present(self):
+        c_findings = Finding.objects.filter(test__engagement__product__prod_type=self, severity='High')
+        if c_findings.count() > 0:
+            return True
+
+    def calc_health(self):
+        h_findings = Finding.objects.filter(test__engagement__product__prod_type=self, severity='High')
+        c_findings = Finding.objects.filter(test__engagement__product__prod_type=self, severity='Critical')
+        health = 100
+        if c_findings.count() > 0:
+            health = 40
+            health = health - ((c_findings.count() - 1) * 5)
+        if h_findings.count() > 0:
+            if health == 100:
+                health = 60
+            health = health - ((h_findings.count() - 1) * 2)
+        if health < 5:
+            return 5
+        else:
+            return health
 
     def findings_count(self):
         return Finding.objects.filter(mitigated__isnull=True,
@@ -67,6 +121,11 @@ class Product_Type(models.Model):
 
     def __unicode__(self):
         return self.name
+
+    def get_breadcrumbs(self):
+        bc = [{'title': self.__unicode__(),
+               'url': reverse('edit_product_type', args=(self.id,))}]
+        return bc
 
 
 class Product_Line(models.Model):
@@ -87,13 +146,31 @@ class Test_Type(models.Model):
     def __unicode__(self):
         return self.name
 
+    def get_breadcrumbs(self):
+        bc = [{'title': self.__unicode__(),
+               'url': None}]
+        return bc
+
 
 class Product(models.Model):
     name = models.CharField(max_length=300)
     description = models.CharField(max_length=2000)
-    prod_manager = models.CharField(default=0, max_length=200)
-    tech_contact = models.CharField(default=0, max_length=200)
-    manager = models.CharField(default=0, max_length=200)
+    '''
+        The following three fields are deprecated and no longer in use.
+        They remain in model for backwards compatibility and will be removed
+        in a future release.  prod_manager, tech_contact, manager
+
+        The admin script migrate_product_contacts should be used to migrate data from
+        these fields to their replacements.  ./manage.py migrate_product_contacts
+    '''
+    prod_manager = models.CharField(default=0, max_length=200)  # unused
+    tech_contact = models.CharField(default=0, max_length=200)  # unused
+    manager = models.CharField(default=0, max_length=200)  # unused
+
+    product_manager = models.ForeignKey(Dojo_User, null=True, blank=True, related_name='product_manager')
+    technical_contact = models.ForeignKey(Dojo_User, null=True, blank=True, related_name='technical_contact')
+    team_manager = models.ForeignKey(Dojo_User, null=True, blank=True, related_name='team_manager')
+
     created = models.DateTimeField(editable=False, null=True, blank=True)
     prod_type = models.ForeignKey(Product_Type, related_name='prod_type',
                                   null=True, blank=True)
@@ -118,10 +195,26 @@ class Product(models.Model):
 
     @property
     def endpoint_count(self):
-        return Endpoint.objects.filter(finding__test__engagement__product=self,
-                                       finding__active=True,
-                                       finding__verified=True,
-                                       finding__mitigated__isnull=True).distinct().count()
+        endpoints = Endpoint.objects.filter(finding__test__engagement__product=self,
+                                            finding__active=True,
+                                            finding__verified=True,
+                                            finding__mitigated__isnull=True)
+
+        hosts = []
+        ids = []
+        for e in endpoints:
+            if ":" in e.host:
+                host_no_port = e.host[:e.host.index(':')]
+            else:
+                host_no_port = e.host
+
+            if host_no_port in hosts:
+                continue
+            else:
+                hosts.append(host_no_port)
+                ids.append(e.id)
+
+        return len(hosts)
 
     def open_findings(self, start_date=None, end_date=None):
         if start_date is None or end_date is None:
@@ -169,6 +262,11 @@ class Product(models.Model):
                     'Low': low,
                     'Total': (critical + high + medium + low)}
 
+    def get_breadcrumbs(self):
+        bc = [{'title': self.__unicode__(),
+               'url': reverse('view_product', args=(self.id,))}]
+        return bc
+
 
 class ScanSettings(models.Model):
     product = models.ForeignKey(Product, default=1, editable=False)
@@ -186,6 +284,12 @@ class ScanSettings(models.Model):
             return [a.strip() for a in self.addresses.split(',')]
         return []
 
+    def get_breadcrumbs(self):
+        bc = self.product.get_breadcrumbs()
+        bc += [{'title': "Scan Settings",
+                'url': reverse('view_scan_settings', args=(self.product.id, self.id,))}]
+        return bc
+
 
 """
 Modified by Fatimah and Micheal
@@ -201,6 +305,15 @@ class Scan(models.Model):
     status = models.CharField(max_length=10, default='Pending', editable=False)
     baseline = models.BooleanField(default=False,
                                    verbose_name="Current Baseline")
+
+    def __unicode__(self):
+        return self.scan_settings.protocol + " Scan " + str(self.date)
+
+    def get_breadcrumbs(self):
+        bc = self.scan_settings.get_breadcrumbs()
+        bc += [{'title': self.__unicode__(),
+                'url': reverse('view_scan', args=(self.id,))}]
+        return bc
 
 
 """
@@ -223,6 +336,7 @@ class Engagement_Type(models.Model):
 
 class Engagement(models.Model):
     name = models.CharField(max_length=300, null=True, blank=True)
+    description = models.CharField(max_length=2000, null=True, blank=True)
     version = models.CharField(max_length=100, null=True, blank=True)
     eng_type = models.ForeignKey(Engagement_Type, null=True, blank=True)
     first_contacted = models.DateField(null=True, blank=True)
@@ -264,6 +378,12 @@ class Engagement(models.Model):
         return "Engagement: %s (%s)" % (self.name if self.name else '',
                                         self.target_start.strftime(
                                             "%b %d, %Y"))
+
+    def get_breadcrumbs(self):
+        bc = self.product.get_breadcrumbs()
+        bc += [{'title': self.__unicode__(),
+                'url': reverse('view_engagement', args=(self.id,))}]
+        return bc
 
 
 class CWE(models.Model):
@@ -315,20 +435,53 @@ class Endpoint(models.Model):
             url = url + '#' + fragment
         return url
 
+    def __eq__(self, other):
+        if isinstance(other, Endpoint):
+            return self.__unicode__() == other.__unicode__()
+        else:
+            return NotImplemented
+
     def finding_count(self):
-        findings = Finding.objects.filter(endpoints__in=[self],
+        host = self.host_no_port
+
+        endpoints = Endpoint.objects.filter(host__regex="^" + host + ":?",
+                                            product=self.product).distinct()
+
+        findings = Finding.objects.filter(endpoints__in=endpoints,
                                           active=True,
-                                          verified=True)
+                                          verified=True,
+                                          out_of_scope=False).distinct()
+
         return findings.count()
 
     def active_findings(self):
-        return Finding.objects.filter(endpoints__in=[self],
+        host = self.host_no_port
+
+        endpoints = Endpoint.objects.filter(host__regex="^" + host + ":?",
+                                            product=self.product).distinct()
+        return Finding.objects.filter(endpoints__in=endpoints,
                                       active=True,
                                       verified=True,
                                       mitigated__isnull=True,
                                       false_p=False,
-                                      duplicate=False,
-                                      is_template=False).order_by('numerical_severity')
+                                      duplicate=False).distinct().order_by('numerical_severity')
+
+    def get_breadcrumbs(self):
+        bc = self.product.get_breadcrumbs()
+        bc += [{'title': self.host_no_port,
+                'url': reverse('view_endpoint', args=(self.id,))}]
+        return bc
+
+    @staticmethod
+    def from_uri(uri):
+        return Endpoint()
+
+    @property
+    def host_no_port(self):
+        if ":" in self.host:
+            return self.host[:self.host.index(":")]
+        else:
+            return self.host
 
 
 class Notes(models.Model):
@@ -350,6 +503,9 @@ class Development_Environment(models.Model):
     def __unicode__(self):
         return self.name
 
+    def get_breadcrumbs(self):
+        return [{"title": self.__unicode__(), "url": reverse("edit_dev_env", args=(self.id,))}]
+
 
 class Test(models.Model):
     engagement = models.ForeignKey(Engagement, editable=False)
@@ -369,6 +525,15 @@ class Test(models.Model):
         return "%s (%s)" % (self.test_type,
                             self.target_start.strftime("%b %d, %Y"))
 
+    def get_breadcrumbs(self):
+        bc = self.engagement.get_breadcrumbs()
+        bc += [{'title': self.__unicode__(),
+                'url': reverse('view_test', args=(self.id,))}]
+        return bc
+
+    def verified_finding_count(self):
+        return Finding.objects.filter(test=self, verified=True).count()
+
 
 class VA(models.Model):
     address = models.TextField(editable=False, default="none")
@@ -387,17 +552,28 @@ class Finding(models.Model):
     description = models.TextField()
     mitigation = models.TextField()
     impact = models.TextField()
-    # will deprecate in version 1.0.3
-    endpoint = models.TextField()
     endpoints = models.ManyToManyField(Endpoint, blank=True, )
+    unsaved_endpoints = []
+    unsaved_request = None
+    unsaved_response = None
+    unsaved_tags = None
     references = models.TextField(null=True, blank=True, db_column="refs")
     test = models.ForeignKey(Test, editable=False)
+    # TODO: Will be deprecated soon
     is_template = models.BooleanField(default=False)
     active = models.BooleanField(default=True)
     verified = models.BooleanField(default=True)
     false_p = models.BooleanField(default=False, verbose_name="False Positive")
     duplicate = models.BooleanField(default=False)
     out_of_scope = models.BooleanField(default=False)
+    under_review = models.BooleanField(default=False)
+    review_requested_by = models.ForeignKey(Dojo_User, null=True, blank=True, related_name='review_requested_by')
+    reviewers = models.ManyToManyField(Dojo_User, blank=True)
+
+    #Defect Tracking Review
+    under_defect_review = models.BooleanField(default=False)
+    defect_review_requested_by = models.ForeignKey(Dojo_User, null=True, blank=True, related_name='defect_review_requested_by')
+
     thread_id = models.IntegerField(default=0, editable=False)
     mitigated = models.DateTimeField(editable=False, null=True, blank=True)
     mitigated_by = models.ForeignKey(User, null=True, editable=False, related_name="mitigated_by")
@@ -407,9 +583,26 @@ class Finding(models.Model):
     numerical_severity = models.CharField(max_length=4)
     last_reviewed = models.DateTimeField(null=True, editable=False)
     last_reviewed_by = models.ForeignKey(User, null=True, editable=False, related_name='last_reviewed_by')
+    images = models.ManyToManyField('FindingImage', blank=True)
+
+    SEVERITIES = {'Info': 4, 'Low': 3, 'Medium': 2,
+                  'High': 1, 'Critical': 0}
 
     class Meta:
-        ordering = ('numerical_severity', '-date')
+        ordering = ('numerical_severity', '-date', 'title')
+
+    @staticmethod
+    def get_numerical_severity(severity):
+        if severity == 'Critical':
+            return 'S0'
+        elif severity == 'High':
+            return 'S1'
+        elif severity == 'Medium':
+            return 'S2'
+        elif severity == 'Low':
+            return 'S3'
+        else:
+            return 'S4'
 
     def __unicode__(self):
         return self.title
@@ -418,6 +611,8 @@ class Finding(models.Model):
         status = []
         if self.active:
             status += ['Active']
+        else:
+            status += ['Inactive']
         if self.verified:
             status += ['Verified']
         if self.mitigated:
@@ -432,7 +627,7 @@ class Finding(models.Model):
             status += ['Accepted']
 
         if not len(status):
-            status += ['Unknown']
+            status += ['Initial']
 
         return ", ".join([str(s) for s in status])
 
@@ -445,20 +640,46 @@ class Finding(models.Model):
 
         return days if days > 0 else 0
 
+    def jira(self):
+        try:
+            jissue = JIRA_Issue.objects.get(finding=self)
+        except:
+            jissue = None
+            pass
+        return jissue
+
+    def jira_conf(self):
+        try:
+            jpkey = JIRA_PKey.objects.get(product=self.test.engagement.product)
+            jconf = jpkey.conf
+        except:
+            jconf = None
+            pass
+        return jconf
+
     def long_desc(self):
         long_desc = ''
-        long_desc += '=== ' + self.title + ' ===\n\n'
+        long_desc += '*' + self.title + '*\n\n'
         long_desc += '*Severity:* ' + self.severity + '\n\n'
-        long_desc += '*Systems*: \n' + self.endpoint + '\n\n'
+        long_desc += '*Systems*: \n'
+        for e in self.endpoints.all():
+            long_desc += str(e) + '\n\n'
         long_desc += '*Description*: \n' + self.description + '\n\n'
+        long_desc += '*Mitigation*: \n' + self.mitigation + '\n\n'
         long_desc += '*Impact*: \n' + self.impact + '\n\n'
         long_desc += '*References*:' + self.references
         return long_desc
 
+    def save(self, *args, **kwargs):
+        super(Finding, self).save(*args, **kwargs)
+        if hasattr(settings, 'ENABLE_DEDUPLICATION'):
+            if settings.ENABLE_DEDUPLICATION and (len(self.endpoints.all()) != 0):
+                from dojo.tasks import async_dedupe
+                async_dedupe.delay(self, *args, **kwargs)
+
     def clean(self):
         no_check = ["test", "reporter"]
-        bigfields = ["description", "mitigation", "references", "impact",
-                     "endpoint", "url"]
+        bigfields = ["description", "mitigation", "references", "impact", "url"]
         for field_obj in self._meta.fields:
             field = field_obj.name
             if field not in no_check:
@@ -467,6 +688,79 @@ class Finding(models.Model):
                     setattr(self, field, "No title given")
                 if not val and field in bigfields:
                     setattr(self, field, "No %s given" % field)
+
+    def severity_display(self):
+        if hasattr(settings, 'S_FINDING_SEVERITY_NAMING'):
+            if settings.S_FINDING_SEVERITY_NAMING:
+                return self.numerical_severity
+            else:
+                return self.severity
+        else:
+            return self.numerical_severity
+
+    def get_breadcrumbs(self):
+        bc = self.test.get_breadcrumbs()
+        bc += [{'title': self.__unicode__(),
+                'url': reverse('view_finding', args=(self.id,))}]
+        return bc
+
+        # def get_request(self):
+        #     if self.burprawrequestresponse_set.count() > 0:
+        #         reqres = BurpRawRequestResponse.objects.get(finding=self)
+        #         return base64.b64decode(reqres.burpRequestBase64)
+        #
+        # def get_response(self):
+        #     if self.burprawrequestresponse_set.count() > 0:
+        #         reqres = BurpRawRequestResponse.objects.get(finding=self)
+        #         res = base64.b64decode(reqres.burpResponseBase64)
+        #         # Removes all blank lines
+        #         res = re.sub(r'\n\s*\n', '\n', res)
+        #         return res
+
+
+Finding.endpoints.through.__unicode__ = lambda x: "Endpoint: " + x.endpoint.host
+
+class Stub_Finding(models.Model):
+    title = models.TextField(max_length=1000, blank=False, null=False)
+    date = models.DateField(default=get_current_date, blank=False, null=False)
+    severity = models.CharField(max_length=200, blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    test = models.ForeignKey(Test, editable=False)
+    reporter = models.ForeignKey(User, editable=False)
+
+    def __unicode__(self):
+        return self.title
+
+    def get_breadcrumbs(self):
+        bc = self.test.get_breadcrumbs()
+        bc += [{'title': "Potential Finding: " + self.__unicode__(),
+                'url': reverse('view_potential_finding', args=(self.id,))}]
+        return bc
+
+
+class Finding_Template(models.Model):
+    title = models.TextField(max_length=1000)
+    cwe = models.IntegerField(default=None, null=True, blank=True)
+    severity = models.CharField(max_length=200, null=True, blank=True)
+    description = models.TextField(null=True, blank=True)
+    mitigation = models.TextField(null=True, blank=True)
+    impact = models.TextField(null=True, blank=True)
+    references = models.TextField(null=True, blank=True, db_column="refs")
+    numerical_severity = models.CharField(max_length=4, null=True, blank=True, editable=False)
+
+    SEVERITIES = {'Info': 4, 'Low': 3, 'Medium': 2,
+                  'High': 1, 'Critical': 0}
+
+    class Meta:
+        ordering = ['-cwe']
+
+    def __unicode__(self):
+        return self.title
+
+    def get_breadcrumbs(self):
+        bc = [{'title': self.__unicode__(),
+               'url': reverse('view_template', args=(self.id,))}]
+        return bc
 
 
 class Check_List(models.Model):
@@ -514,11 +808,26 @@ class Check_List(models.Model):
         else:
             return 'warning'
 
+    def get_breadcrumb(self):
+        bc = self.engagement.get_breadcrumb()
+        bc += [{'title': "Check List",
+                'url': reverse('complete_checklist', args=(self.engagement.id,))}]
+        return bc
+
 
 class BurpRawRequestResponse(models.Model):
     finding = models.ForeignKey(Finding, blank=True, null=True)
     burpRequestBase64 = models.BinaryField()
     burpResponseBase64 = models.BinaryField()
+
+    def get_request(self):
+        return base64.b64decode(self.burpRequestBase64)
+
+    def get_response(self):
+        res = base64.b64decode(self.burpResponseBase64)
+        # Removes all blank lines
+        res = re.sub(r'\n\s*\n', '\n', res)
+        return res
 
 
 class Risk_Acceptance(models.Model):
@@ -539,6 +848,227 @@ class Risk_Acceptance(models.Model):
         return os.path.basename(self.path.name) \
             if self.path is not None else ''
 
+    def get_breadcrumbs(self):
+        bc = self.engagement_set.first().get_breadcrumbs()
+        bc += [{'title': self.__unicode__(),
+                'url': reverse('view_risk', args=(self.engagement_set.first().product.id, self.id,))}]
+        return bc
+
+
+class Report(models.Model):
+    name = models.CharField(max_length=200)
+    type = models.CharField(max_length=100, default='Finding')
+    format = models.CharField(max_length=15, default='AsciiDoc')
+    requester = models.ForeignKey(User)
+    task_id = models.CharField(max_length=50)
+    file = models.FileField(upload_to='reports/%Y/%m/%d', verbose_name='Report File', null=True)
+    status = models.CharField(max_length=10, default='requested')
+    options = models.TextField()
+    datetime = models.DateTimeField(auto_now_add=True)
+    done_datetime = models.DateTimeField(null=True)
+
+    def __unicode__(self):
+        return self.name
+
+    def get_url(self):
+        return reverse('download_report', args=(self.id,))
+
+    class Meta:
+        ordering = ['-datetime']
+
+
+class FindingImage(models.Model):
+    image = models.ImageField(upload_to='finding_images', null=True)
+    image_thumbnail = ImageSpecField(source='image',
+                                     processors=[ResizeToCover(100, 100)],
+                                     format='JPEG',
+                                     options={'quality': 70})
+    image_small = ImageSpecField(source='image',
+                                 processors=[ResizeToCover(640, 480)],
+                                 format='JPEG',
+                                 options={'quality': 100})
+    image_medium = ImageSpecField(source='image',
+                                  processors=[ResizeToCover(800, 600)],
+                                  format='JPEG',
+                                  options={'quality': 100})
+    image_large = ImageSpecField(source='image',
+                                 processors=[ResizeToCover(1024, 768)],
+                                 format='JPEG',
+                                 options={'quality': 100})
+
+    def __unicode__(self):
+        return self.image.name
+
+
+class FindingImageAccessToken(models.Model):
+    """This will allow reports to request the images without exposing the media root to the world without
+    authentication"""
+    user = models.ForeignKey(User, null=False, blank=False)
+    image = models.ForeignKey(FindingImage, null=False, blank=False)
+    token = models.CharField(max_length=255)
+    size = models.CharField(max_length=9,
+                            choices=(
+                                ('small', 'Small'),
+                                ('medium', 'Medium'),
+                                ('large', 'Large'),
+                                ('thumbnail', 'Thumbnail'),
+                                ('original', 'Original')),
+                            default='medium')
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = uuid4()
+        return super(FindingImageAccessToken, self).save(*args, **kwargs)
+
+class JIRA_Conf(models.Model):
+    url =  models.URLField(max_length=2000, verbose_name="JIRA URL")
+#    product = models.ForeignKey(Product)
+    username = models.CharField(max_length=2000 )
+    password = models.CharField(max_length=2000)
+#    project_key = models.CharField(max_length=200,null=True, blank=True)
+#    enabled = models.BooleanField(default=True)
+    default_issue_type = models.CharField(max_length=9,
+                            choices=(
+                                ('Task', 'Task'),
+                                ('Story', 'Story'),
+                                ('Epic', 'Epic'),
+                                ('Spike', 'Spike'),
+                                ('Bug', 'Bug')),
+                            default='Bug')
+    epic_name_id = models.IntegerField()
+    open_status_key = models.IntegerField()
+    close_status_key = models.IntegerField()
+    low_mapping_severity = models.CharField(max_length=200)
+    medium_mapping_severity = models.CharField(max_length=200)
+    high_mapping_severity = models.CharField(max_length=200)
+    critical_mapping_severity = models.CharField(max_length=200)
+    finding_text = models.TextField(null=True, blank=True)
+
+    def __unicode__(self):
+        return self.url + " | " + self.username
+
+    def get_priority(self, status):
+        if status == 'Low':
+            return self.low_mapping_severity
+        elif status == 'Medium':
+            return self.medium_mapping_severity
+        elif status == 'High':
+            return self.high_mapping_severity
+        elif status == 'Critical':
+            return self.critical_mapping_severity
+        else:
+            return 'N/A'
+
+class JIRA_Issue(models.Model):
+    jira_id =  models.CharField(max_length=200)
+    jira_key =  models.CharField(max_length=200)
+    finding = models.OneToOneField(Finding, null=True, blank=True)
+    engagement = models.OneToOneField(Engagement, null=True, blank=True)
+
+class JIRA_Clone(models.Model):
+    jira_id =  models.CharField(max_length=200)
+    jira_clone_id =  models.CharField(max_length=200)
+
+class JIRA_Details_Cache(models.Model):
+    jira_id =  models.CharField(max_length=200)
+    jira_key =  models.CharField(max_length=200)
+    jira_status = models.CharField(max_length=200)
+    jira_resolution = models.CharField(max_length=200)
+
+class JIRA_PKey(models.Model):
+    project_key = models.CharField(max_length=200, blank=True)
+    product = models.ForeignKey(Product)
+    conf = models.ForeignKey(JIRA_Conf, verbose_name="JIRA Configuration", null=True, blank=True)
+    component = models.CharField(max_length=200, blank=True)
+    push_all_issues = models.BooleanField(default=False, blank=True)
+    enable_engagement_epic_mapping = models.BooleanField(default=False, blank=True)
+    push_notes = models.BooleanField(default=False, blank=True)
+
+class Tool_Type(models.Model):
+    name = models.CharField(max_length=200)
+    description = models.CharField(max_length=2000, null=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __unicode__(self):
+        return self.name
+
+class Tool_Configuration(models.Model):
+    name = models.CharField(max_length=200, null=False)
+    description = models.CharField(max_length=2000, null=True)
+    url =  models.URLField(max_length=2000, null=True)
+    tool_type = models.ForeignKey(Tool_Type, related_name='tool_type')
+
+    class Meta:
+        ordering = ['name']
+
+    def __unicode__(self):
+        return self.name
+
+class Tool_Product_Settings(models.Model):
+    name = models.CharField(max_length=200, null=False)
+    description = models.CharField(max_length=2000, null=True)
+    url =  models.URLField(max_length=2000, null=True, blank=True)
+    product = models.ForeignKey(Product, default=1, editable=False)
+    tool_configuration = models.ForeignKey(Tool_Configuration, null=False, related_name='tool_configuration')
+    tool_project_id = models.CharField(max_length=200, null=True, blank=True)
+    notes = models.ManyToManyField(Notes, blank=True, editable=False)
+
+    class Meta:
+        ordering = ['name']
+
+class Alerts(models.Model):
+    description = models.CharField(max_length=2000, null=True)
+    url =  models.URLField(max_length=2000, null=True)
+    source = models.CharField(max_length=15,
+                            choices=(
+                                ('Jira', 'Jira'),
+                                ('AsyncImport', 'Async Import'),
+                                ('Generic', 'Generic')),
+                            default='Generic')
+    icon = models.CharField(max_length=25, default='icon-user-check')
+    user_id = models.ForeignKey(User, null=True, editable=False)
+    created = models.DateTimeField(null=False, editable=False, default=now)
+    display_date = models.DateTimeField(null=False, default=now)
+
+class Cred_User(models.Model):
+    name = models.CharField(max_length=200, null=False)
+    username = models.CharField(max_length=200, null=False)
+    password = models.CharField(max_length=400, null=False)
+    role = models.CharField(max_length=200, null=False)
+    authentication = models.CharField(max_length=15,
+                            choices=(
+                                ('Form', 'Form Authentication'),
+                                ('SSO', 'SSO Redirect')),
+                            default='Form')
+    http_authentication = models.CharField(max_length=15,
+                            choices=(
+                                ('Basic', 'Basic'),
+                                ('NTLM', 'NTLM')),
+                                null=True, blank=True)
+    description = models.CharField(max_length=2000, null=True, blank=True)
+    url =  models.URLField(max_length=2000, null=False)
+    environment = models.ForeignKey(Development_Environment, null=False)
+    login_regex = models.CharField(max_length=200, null=True, blank=True)
+    logout_regex = models.CharField(max_length=200, null=True, blank=True)
+    notes = models.ManyToManyField(Notes, blank=True, editable=False)
+    is_valid = models.BooleanField(default=True, verbose_name="Login is valid")
+
+    class Meta:
+        ordering = ['name']
+
+    def __unicode__(self):
+        return self.name + " (" + self.role + ")"
+
+class Cred_Mapping(models.Model):
+    cred_id = models.ForeignKey(Cred_User, null=False, related_name="cred_user", verbose_name="Credential")
+    product = models.ForeignKey(Product, null=True, blank=True, related_name="product")
+    finding = models.ForeignKey(Finding, null=True, blank=True, related_name="finding")
+    engagement = models.ForeignKey(Engagement, null=True, blank=True, related_name="engagement")
+    test = models.ForeignKey(Test, null=True, blank=True, related_name="test")
+    is_authn_provider = models.BooleanField(default=False, verbose_name="Authentication Provider")
+    url =  models.URLField(max_length=2000, null=True, blank=True)
 
 # Register for automatic logging to database
 auditlog.register(Dojo_User)
@@ -548,9 +1078,22 @@ auditlog.register(Finding)
 auditlog.register(Product)
 auditlog.register(Test)
 auditlog.register(Risk_Acceptance)
+auditlog.register(Finding_Template)
+auditlog.register(Cred_User)
+
+# Register tagging for models
+tag_register(Product)
+tag_register(Test)
+tag_register(Finding)
+tag_register(Engagement)
+tag_register(Endpoint)
+tag_register(Finding_Template)
 
 admin.site.register(Test)
 admin.site.register(Finding)
+admin.site.register(FindingImage)
+admin.site.register(FindingImageAccessToken)
+admin.site.register(Stub_Finding)
 admin.site.register(Engagement)
 admin.site.register(Risk_Acceptance)
 admin.site.register(Check_List)
@@ -558,3 +1101,20 @@ admin.site.register(Test_Type)
 admin.site.register(Endpoint)
 admin.site.register(Product)
 admin.site.register(Dojo_User)
+admin.site.register(UserContactInfo)
+admin.site.register(Notes)
+admin.site.register(Report)
+admin.site.register(Scan)
+admin.site.register(ScanSettings)
+admin.site.register(IPScan)
+admin.site.register(Alerts)
+admin.site.register(JIRA_Issue)
+admin.site.register(Tool_Configuration)
+admin.site.register(Tool_Product_Settings)
+admin.site.register(Tool_Type)
+admin.site.register(Cred_User)
+admin.site.register(Cred_Mapping)
+
+watson.register(Product)
+watson.register(Test)
+watson.register(Finding)

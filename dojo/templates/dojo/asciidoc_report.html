@@ -243,12 +243,15 @@
             {{ find.impact|linebreaksasciidocbr }}
         </p>
         <br>
-        <p><b>==== Systems Vulnerable: ====</b><br>
-            {% for endpoint in  find.endpoints.all %}
-                {{ endpoint }} +<br/>
-            {% endfor %}
-        </p>
-        <br>
+        {% if find.endpoints.all %}
+            <p><b>==== Systems Vulnerable: ====</b><br>
+                {% for endpoint in  find.endpoints.all %}
+                    {{ endpoint }} +<br/>
+                {% endfor %}
+            </p>
+            <br>
+        {% endif %}
+
         <p><b>==== Suggested Mitigation: ====</b>
             <br>
             {{ find.mitigation|linebreaksasciidocbr }}
@@ -259,6 +262,20 @@
             {{ find.references|linebreaksasciidocbr }}
         </p>
         <br>
+        {% if include_finding_images %}
+            <p><b>==== Finding Images: ====</b>
+                <br>
+                {% if find.images.all %}
+                    {% for pic in find.images.all %}
+                        image::{{ request.scheme }}://{{ request.get_host }}{% pic_token pic 'small' %}[] +<br>
+                    {% endfor %}
+                {% else %}
+                    No images found.
+                {% endif %}
+            </p><br>
+        {% else %}
+            <br>
+        {% endif %}
         {% if include_finding_notes %}
             <p><b>==== Finding Notes: ====</b>
                 <br>
@@ -295,6 +312,20 @@
                 <br>
                 {{ find.description|linebreaksasciidocbr }}
             </p>
+            {% if include_finding_images %}
+                <p><b>==== Finding Images: ====</b>
+                    <br>
+                    {% if find.images.all %}
+                        {% for pic in find.images.all %}
+                            image::{{ request.scheme }}://{{ request.get_host }}{% pic_token pic 'small' %}[] +<br>
+                        {% endfor %}
+                    {% else %}
+                        No images found.
+                    {% endif %}
+                </p><br>
+            {% else %}
+                <br>
+            {% endif %}
             {% if include_finding_notes %}
                 <br>
                 <p><b>==== Finding Notes: ====</b>
@@ -366,6 +397,21 @@
                     <br>
                     {{ find.references|linebreaksasciidocbr }}
                 </p>
+                <br>
+                {% if include_finding_images %}
+                    <p><b>==== Finding Images: ====</b>
+                        <br>
+                        {% if find.images.all %}
+                            {% for pic in find.images.all %}
+                                image::{{ request.scheme }}://{{ request.get_host }}{% pic_token pic 'small' %}[] +<br>
+                            {% endfor %}
+                        {% else %}
+                            No images found.
+                        {% endif %}
+                    </p><br>
+                {% else %}
+                    <br>
+                {% endif %}
                 <br>
                 {% if include_finding_notes %}
                     <p><b>==== Finding Notes: ====</b>

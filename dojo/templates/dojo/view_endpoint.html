@@ -11,18 +11,20 @@
         <div class="panel-heading">
             <div class="clearfix">
                 <h4 class="pull-left to_highlight finding-title">
-                    {{ endpoint|truncatechars:115 }}
-                    <span class="text-muted endpoint_product">{{ endpoint.product }}</span>
+                    {{ endpoint.host_no_port }}
+                    <span class="text-muted endpoint_product">
+                        <a href="{% url 'view_product' endpoint.product.id %}">{{ endpoint.product }}</a>
+                    </span>
                 </h4>
 
 
                 <div class="dropdown pull-right">
                     <div class="btn-group">
-                        <button class="btn btn-default clickable panel-collapsed">
+                        <button class="btn btn-primary clickable panel-collapsed">
                             <span><i class="fa fa-bar-chart"></i></span>
                         </button>
                         {% if user.is_staff %}
-                            <button class="btn btn-default dropdown-toggle" type="button" id="dropdownMenu1"
+                            <button class="btn btn-primary dropdown-toggle" type="button" id="dropdownMenu1"
                                     data-toggle="dropdown" aria-expanded="true">
                                 <span class="fa fa-bars"></span>
                                 <span class="caret"></span>
@@ -34,8 +36,13 @@
                                     </a>
                                 </li>
                                 <li role="presentation">
+                                    <a href="{% url 'add_endpoint_meta_data' endpoint.id %}">
+                                        <i class="fa fa-list-alt"></i> Add Metadata
+                                    </a>
+                                </li>
+                                <li role="presentation">
                                     <a href="{% url 'endpoint_report' endpoint.id %}">
-                                        <i class="fa fa-file-text-o"></i>  Generate Report
+                                        <i class="fa fa-file-text-o"></i> Report
                                     </a>
                                 </li>
                                 <li role="presentation">
@@ -124,11 +131,79 @@
         </div>
     </div>
 
+    <div class="panel panel-default endpoints table-responsive">
+        <div class="panel-heading">
+            <h4>Vulnerable Services</h4>
+        </div>
+        {% if  endpoints %}
+            {% colgroup endpoints into 3 cols as grouped_items %}
+            <table class="table-striped table table table-condensed table-hover finding-endpoints">
+                {% for row in grouped_items %}
+                    <tr>
+                        {% for item in row %}
+                            <td>{% if item %}<i class="fa fa-circle"></i> {{ item }}{% endif %}
+                            </td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <div id="vuln_endpoints" class="panel-body endpoint-panel table-responsive">
+                No endpoints.
+            </div>
+        {% endif %}
 
+    </div>
+
+    {% if endpoint.tags %}
+        <div class="panel panel-default tags">
+            <div class="panel-heading">
+                <h4>Tags</h4>
+            </div>
+            <div class="tags panel-body">
+                {% for tag in endpoint.tags %}
+                    <a title="Search {{ tag }}" class="btn btn-tag btn-primary" href="{% url 'simple_search' %}?query={{ tag }}">{{ tag }}</a>
+                {% endfor %}
+            </div>
+        </div>
+    {% endif %}
+
+    {% if endpoint_metadata %}
+        <div class="row">
+            <div class="col-md-12">
+                <div class="panel panel-default table-responsive">
+                    <div class="panel-heading">
+                        <h4>Additional Information
+                            <div class="btn-group pull-right">
+                                <a title="Edit Information" class="btn btn-sm btn-primary"
+                                   href="{% url 'edit_endpoint_meta_data' endpoint.id %}">
+                                    <span class="fa fa-pencil-square-o"></span>
+                                </a>
+                                <a title="Add Information" class="btn btn-sm btn-primary"
+                                   href="{% url 'add_endpoint_meta_data' endpoint.id %}">
+                                    <span class="fa fa-plus"></span>
+                                </a>
+                            </div>
+                        </h4>
+                    </div>
+
+                    <div class="panel-body">
+                        {% for key, value in endpoint_metadata.items %}
+                            <div class="col-md-2 centered">
+                                <b>{{ key }}</b><br/>
+                                {{ value }}
+                                <br/>&nbsp;
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    {% endif %}
 
     <div class="panel panel-default table-responsive">
         <div class="panel-heading">
-            <h4>Findings</h4>
+            <h4>Active Findings</h4>
         </div>
         {% if findings %}
             <table id="findings" class="tablesorter-bootstrap table table-striped table-bordered">
@@ -160,11 +235,11 @@
 
                 </tbody>
             </table>
+            <div class="clearfix">
+                {% include "dojo/paging_snippet.html" with page=findings %}
             </div>
-            {% include "dojo/paging_snippet.html" with page=findings %}
         {% else %}
             <p class="text-center">No findings found.</p>
-            </div>
         {% endif %}
 
     </div>
